@@ -30,6 +30,7 @@ Item {
     }
     property var selectedPaths: []
     property int anchorIndex: -1
+    property bool updatingKeyboardSelection: false
 
     function forceActiveFocus() {
         gridView.forceActiveFocus();
@@ -162,6 +163,58 @@ Item {
         gridView.forceActiveFocus();
     }
 
+    function stepSelection(direction, extend) {
+        if (!root.model || root.model.count === 0)
+            return;
+
+        const count = root.model.count;
+        const current = gridView.currentIndex;
+        const hasCurrent = current >= 0 && current < count;
+
+        if (extend) {
+            if (!hasCurrent || root.selectedPaths.length === 0)
+                root.anchorIndex = hasCurrent ? current : 0;
+            else if (root.anchorIndex < 0 || root.anchorIndex >= count)
+                root.anchorIndex = current;
+        }
+
+        root.updatingKeyboardSelection = true;
+        try {
+            if (!hasCurrent) {
+                gridView.currentIndex = 0;
+            } else {
+                switch (direction) {
+                case Qt.Key_Left:
+                    gridView.moveCurrentIndexLeft();
+                    break;
+                case Qt.Key_Right:
+                    gridView.moveCurrentIndexRight();
+                    break;
+                case Qt.Key_Up:
+                    gridView.moveCurrentIndexUp();
+                    break;
+                case Qt.Key_Down:
+                    gridView.moveCurrentIndexDown();
+                    break;
+                }
+            }
+
+            const target = gridView.currentIndex;
+
+            if (extend) {
+                root.selectRange(target);
+            } else {
+                const entry = root.model.get(target);
+                if (entry)
+                    root.selectSingle(entry.path, target);
+            }
+
+            gridView.positionViewAtIndex(target, GridView.Contain);
+        } finally {
+            root.updatingKeyboardSelection = false;
+        }
+    }
+
     GridView {
         id: gridView
         z: 1
@@ -222,6 +275,9 @@ Item {
         Component.onCompleted: gridView.forceActiveFocus()
 
         onCurrentIndexChanged: {
+            if (root.updatingKeyboardSelection)
+                return;
+
             if (currentIndex >= 0 && currentIndex < (root.model ? root.model.count : 0)) {
                 let entry = root.model.get(currentIndex);
                 if (entry && root.selectedPaths.length <= 1) {
@@ -240,8 +296,13 @@ Item {
         Keys.onSpacePressed: if (root.currentItem && root.selectedPaths.length > 0 && (FileUtils.isImage(root.currentItem.path) || FileUtils.isVideo(root.currentItem.path)) && typeof mediaViewerModal !== "undefined" && mediaViewerModal) mediaViewerModal.openFile(root.currentItem.path, root.model)
 
         Keys.onPressed: event => {
+            const key = event.key;
+            const mods = event.modifiers & ~Qt.KeypadModifier;
+            const noMod = mods === Qt.NoModifier;
+            const shiftMod = mods === Qt.ShiftModifier;
+
             // F-Key Accelerators
-            if (event.key === Qt.Key_F2) {
+            if (key === Qt.Key_F2) {
                 if (root.currentItem && typeof newItemModal !== "undefined" && newItemModal) {
                     newItemModal.title = qsTr("Rename");
                     newItemModal.icon = "drive_file_rename_outline";
@@ -251,26 +312,26 @@ Item {
                     event.accepted = true;
                     return;
                 }
-            } else if (event.key === Qt.Key_F4) {
+            } else if (key === Qt.Key_F4) {
                 let curDir = root.activeTab ? root.activeTab.currentPath : "";
                 if (curDir.length > 0) {
                     AppIntegration.openInTerminal(curDir);
                     event.accepted = true;
                     return;
                 }
-            } else if (event.key === Qt.Key_F5) {
+            } else if (key === Qt.Key_F5) {
                 if (root.model) {
                     root.model.refresh();
                     event.accepted = true;
                     return;
                 }
-            } else if (event.key === Qt.Key_F1) {
+            } else if (key === Qt.Key_F1) {
                 if (typeof previewPanel !== "undefined" && previewPanel) {
                     previewPanel.expanded = !previewPanel.expanded;
                     event.accepted = true;
                     return;
                 }
-            } else if (event.key === Qt.Key_F3) {
+            } else if (key === Qt.Key_F3) {
                 if (root.activeTab) {
                     root.activeTab.isSplit = !root.activeTab.isSplit;
                     if (root.activeTab.isSplit && !root.activeTab.splitPath) {
@@ -281,52 +342,44 @@ Item {
                 }
             }
 
-            if (event.modifiers === Qt.NoModifier || event.modifiers === Qt.KeypadModifier) {
-                if (event.key === Qt.Key_Return || event.key === Qt.Key_Enter) {
+            const keyMatches = (actionKey, vimKey) => key === actionKey || (AppController.vimMotions && !shiftMod && key === vimKey);
+
+            if (noMod || shiftMod) {
+                let direction = -1;
+
+                if (keyMatches(Qt.Key_Left, Qt.Key_H))
+                    direction = Qt.Key_Left;
+                else if (keyMatches(Qt.Key_Right, Qt.Key_L))
+                    direction = Qt.Key_Right;
+                else if (keyMatches(Qt.Key_Up, Qt.Key_K))
+                    direction = Qt.Key_Up;
+                else if (keyMatches(Qt.Key_Down, Qt.Key_J))
+                    direction = Qt.Key_Down;
+
+                if (direction !== -1) {
+                    root.stepSelection(direction, shiftMod);
+                    event.accepted = true;
+                    return;
+                }
+            }
+
+            if (noMod) {
+                switch (key) {
+                case Qt.Key_Return:
+                case Qt.Key_Enter:
                     if (root.currentItem) {
                         root.openItem(root.currentItem);
                         event.accepted = true;
                         return;
                     }
-                } else if (event.key === Qt.Key_Left || (AppController.vimMotions && event.key === Qt.Key_H)) {
-                    if (gridView.currentIndex === -1 && root.model && root.model.count > 0) {
-                        gridView.currentIndex = 0;
-                    } else {
-                        gridView.moveCurrentIndexLeft();
-                    }
-                    event.accepted = true;
-                    return;
-                } else if (event.key === Qt.Key_Down || (AppController.vimMotions && event.key === Qt.Key_J)) {
-                    if (gridView.currentIndex === -1 && root.model && root.model.count > 0) {
-                        gridView.currentIndex = 0;
-                    } else {
-                        gridView.moveCurrentIndexDown();
-                    }
-                    event.accepted = true;
-                    return;
-                } else if (event.key === Qt.Key_Up || (AppController.vimMotions && event.key === Qt.Key_K)) {
-                    if (gridView.currentIndex === -1 && root.model && root.model.count > 0) {
-                        gridView.currentIndex = 0;
-                    } else {
-                        gridView.moveCurrentIndexUp();
-                    }
-                    event.accepted = true;
-                    return;
-                } else if (event.key === Qt.Key_Right || (AppController.vimMotions && event.key === Qt.Key_L)) {
-                    if (gridView.currentIndex === -1 && root.model && root.model.count > 0) {
-                        gridView.currentIndex = 0;
-                    } else {
-                        gridView.moveCurrentIndexRight();
-                    }
-                    event.accepted = true;
-                    return;
-                } else if (event.key === Qt.Key_Slash) {
+                    break;
+                case Qt.Key_Slash:
                     if (typeof navBar !== "undefined" && navBar) {
                         navBar.openSearch("");
                     }
                     event.accepted = true;
                     return;
-                } else if (event.key === Qt.Key_Backspace) {
+                case Qt.Key_Backspace:
                     if (root.model && root.model.isSearching && typeof navBar !== "undefined" && navBar) {
                         navBar.closeSearch();
                         event.accepted = true;
@@ -337,15 +390,16 @@ Item {
                         event.accepted = true;
                         return;
                     }
+                    break;
                 }
             }
+
             if ((event.modifiers === Qt.NoModifier || event.modifiers === Qt.ShiftModifier) && event.text.length > 0) {
                 let ch = event.text;
                 let code = ch.charCodeAt(0);
                 if (code >= 32 && ch !== ' ') {
                     root.handleTypeAhead(ch);
                     event.accepted = true;
-                    return;
                 }
             }
         }
